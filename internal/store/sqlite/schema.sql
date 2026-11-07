@@ -204,3 +204,47 @@ CREATE INDEX IF NOT EXISTS idx_releases_master_id ON releases(master_id);
 CREATE INDEX IF NOT EXISTS idx_master_artists_artist_id ON master_artists(artist_id);
 CREATE INDEX IF NOT EXISTS idx_release_artists_artist_id ON release_artists(artist_id);
 CREATE INDEX IF NOT EXISTS idx_release_labels_label_id ON release_labels(label_id);
+
+-- Name indexes, so lookups/searches by artist name (either the canonical
+-- artists row or the as-credited name on a release/master) can use an
+-- index instead of a full scan. LIKE 'prefix%' can use a NOCASE index;
+-- a leading-wildcard search ('%name%') still can't.
+CREATE INDEX IF NOT EXISTS idx_artists_name ON artists(name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_release_artists_name ON release_artists(name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_master_artists_name ON master_artists(name COLLATE NOCASE);
+
+-- release_search/master_search flatten the id-based artist credit tables
+-- into one row per (release, credited artist) / (master, credited artist),
+-- resolving artist_name to the canonical artists.name when the credit is
+-- linked by id and falling back to the as-credited name otherwise. This is
+-- the shape most "find X by artist name" queries want, e.g.:
+--   SELECT DISTINCT release_id, release_title FROM release_search
+--   WHERE artist_name LIKE 'Miles Davis%';
+CREATE VIEW IF NOT EXISTS release_search AS
+SELECT
+    r.id                      AS release_id,
+    r.title                   AS release_title,
+    r.released,
+    r.country,
+    r.data_quality,
+    ra.seq,
+    ra.artist_id,
+    coalesce(a.name, ra.name) AS artist_name,
+    ra.role
+FROM releases r
+JOIN release_artists ra ON ra.release_id = r.id
+LEFT JOIN artists a ON a.id = ra.artist_id;
+
+CREATE VIEW IF NOT EXISTS master_search AS
+SELECT
+    m.id                      AS master_id,
+    m.title                   AS master_title,
+    m.year,
+    m.data_quality,
+    ma.seq,
+    ma.artist_id,
+    coalesce(a.name, ma.name) AS artist_name,
+    ma.role
+FROM masters m
+JOIN master_artists ma ON ma.master_id = m.id
+LEFT JOIN artists a ON a.id = ma.artist_id;
