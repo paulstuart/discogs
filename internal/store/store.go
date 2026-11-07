@@ -21,6 +21,11 @@ type Store interface {
 	PutLabels(ctx context.Context, batch []model.Label) error
 	PutMasters(ctx context.Context, batch []model.Master) error
 	PutReleases(ctx context.Context, batch []model.Release) error
+	// BuildIndexes creates every index/view used for querying. Call this
+	// once, explicitly, after all desired loads are done -- not
+	// automatically after every load -- so bulk inserts never pay
+	// index-maintenance cost mid-load.
+	BuildIndexes(ctx context.Context) error
 	Close() error
 }
 

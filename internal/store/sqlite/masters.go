@@ -33,7 +33,7 @@ func (s *SQLiteStore) PutMasters(ctx context.Context, batch []model.Master) erro
 		return fmt.Errorf("sqlite: PutMasters prepare delete genres: %w", err)
 	}
 	defer delGenres.Close()
-	insGenre, err := tx.PrepareContext(ctx, "INSERT OR IGNORE INTO master_genres (master_id, genre) VALUES (?, ?)")
+	insGenre, err := tx.PrepareContext(ctx, "INSERT OR IGNORE INTO master_genres (master_id, genre_id) VALUES (?, ?)")
 	if err != nil {
 		return fmt.Errorf("sqlite: PutMasters prepare insert genres: %w", err)
 	}
@@ -44,7 +44,7 @@ func (s *SQLiteStore) PutMasters(ctx context.Context, batch []model.Master) erro
 		return fmt.Errorf("sqlite: PutMasters prepare delete styles: %w", err)
 	}
 	defer delStyles.Close()
-	insStyle, err := tx.PrepareContext(ctx, "INSERT OR IGNORE INTO master_styles (master_id, style) VALUES (?, ?)")
+	insStyle, err := tx.PrepareContext(ctx, "INSERT OR IGNORE INTO master_styles (master_id, style_id) VALUES (?, ?)")
 	if err != nil {
 		return fmt.Errorf("sqlite: PutMasters prepare insert styles: %w", err)
 	}
@@ -81,7 +81,11 @@ func (s *SQLiteStore) PutMasters(ctx context.Context, batch []model.Master) erro
 			return fmt.Errorf("sqlite: PutMasters delete genres id=%d: %w", m.ID, err)
 		}
 		for _, g := range m.Genres {
-			if _, err := insGenre.ExecContext(ctx, m.ID, g); err != nil {
+			genreID, err := s.genres.id(ctx, tx, g)
+			if err != nil {
+				return err
+			}
+			if _, err := insGenre.ExecContext(ctx, m.ID, genreID); err != nil {
 				return fmt.Errorf("sqlite: PutMasters insert genre id=%d: %w", m.ID, err)
 			}
 		}
@@ -90,7 +94,11 @@ func (s *SQLiteStore) PutMasters(ctx context.Context, batch []model.Master) erro
 			return fmt.Errorf("sqlite: PutMasters delete styles id=%d: %w", m.ID, err)
 		}
 		for _, st := range m.Styles {
-			if _, err := insStyle.ExecContext(ctx, m.ID, st); err != nil {
+			styleID, err := s.styles.id(ctx, tx, st)
+			if err != nil {
+				return err
+			}
+			if _, err := insStyle.ExecContext(ctx, m.ID, styleID); err != nil {
 				return fmt.Errorf("sqlite: PutMasters insert style id=%d: %w", m.ID, err)
 			}
 		}

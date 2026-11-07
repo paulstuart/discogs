@@ -1,7 +1,11 @@
--- Schema for the Discogs dump SQLite store. No FOREIGN KEY constraints are
--- enforced: dump files are loaded independently and can contain forward
--- references (e.g. a label's sublabel id that hasn't been loaded yet).
--- FK-shaped columns exist for joins/indexes only.
+-- Table definitions only. No FOREIGN KEY constraints are enforced: dump
+-- files are loaded independently and can contain forward references (e.g.
+-- a label's sublabel id that hasn't been loaded yet). FK-shaped columns
+-- exist for joins/indexes only.
+--
+-- Indexes and views live in indexes.sql, applied by a separate explicit
+-- step (see SQLiteStore.BuildIndexes) after bulk loading finishes, so
+-- `load` never pays index-maintenance cost mid-insert.
 
 CREATE TABLE IF NOT EXISTS artists (
     id INTEGER PRIMARY KEY,
@@ -54,6 +58,36 @@ CREATE TABLE IF NOT EXISTS label_sublabels (
     PRIMARY KEY (label_id, sublabel_id)
 );
 
+-- Lookup tables for free-text vocabulary that's otherwise repeated across
+-- tens of millions of child rows. genres/styles/countries/identifier_types
+-- synthesize their own surrogate id (there's no natural numeric code for
+-- these in the source XML); the UNIQUE constraint on name is required, not
+-- deferred, because it backs the "INSERT ... ON CONFLICT(name) ... RETURNING
+-- id" upsert used to resolve a name to its id during load (see lookup.go).
+CREATE TABLE IF NOT EXISTS genres (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE
+);
+CREATE TABLE IF NOT EXISTS styles (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE
+);
+CREATE TABLE IF NOT EXISTS countries (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE
+);
+CREATE TABLE IF NOT EXISTS identifier_types (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE
+);
+-- company_roles is different: Discogs' own <entity_type> numeric code
+-- (e.g. 23 -> "Recorded At") is already a stable key, so id here is that
+-- code directly rather than a synthesized surrogate.
+CREATE TABLE IF NOT EXISTS company_roles (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS masters (
     id INTEGER PRIMARY KEY,
     main_release INTEGER,
@@ -63,13 +97,13 @@ CREATE TABLE IF NOT EXISTS masters (
 );
 CREATE TABLE IF NOT EXISTS master_genres (
     master_id INTEGER NOT NULL,
-    genre TEXT NOT NULL,
-    PRIMARY KEY (master_id, genre)
+    genre_id INTEGER NOT NULL,
+    PRIMARY KEY (master_id, genre_id)
 );
 CREATE TABLE IF NOT EXISTS master_styles (
     master_id INTEGER NOT NULL,
-    style TEXT NOT NULL,
-    PRIMARY KEY (master_id, style)
+    style_id INTEGER NOT NULL,
+    PRIMARY KEY (master_id, style_id)
 );
 CREATE TABLE IF NOT EXISTS master_artists (
     master_id INTEGER NOT NULL,
@@ -96,7 +130,7 @@ CREATE TABLE IF NOT EXISTS releases (
     id INTEGER PRIMARY KEY,
     status TEXT,
     title TEXT NOT NULL,
-    country TEXT,
+    country_id INTEGER,
     released TEXT,
     notes TEXT,
     master_id INTEGER,
@@ -145,13 +179,13 @@ CREATE TABLE IF NOT EXISTS release_format_descriptions (
 );
 CREATE TABLE IF NOT EXISTS release_genres (
     release_id INTEGER NOT NULL,
-    genre TEXT NOT NULL,
-    PRIMARY KEY (release_id, genre)
+    genre_id INTEGER NOT NULL,
+    PRIMARY KEY (release_id, genre_id)
 );
 CREATE TABLE IF NOT EXISTS release_styles (
     release_id INTEGER NOT NULL,
-    style TEXT NOT NULL,
-    PRIMARY KEY (release_id, style)
+    style_id INTEGER NOT NULL,
+    PRIMARY KEY (release_id, style_id)
 );
 CREATE TABLE IF NOT EXISTS release_tracks (
     release_id INTEGER NOT NULL,
@@ -175,7 +209,7 @@ CREATE TABLE IF NOT EXISTS release_track_artists (
 CREATE TABLE IF NOT EXISTS release_identifiers (
     release_id INTEGER NOT NULL,
     seq INTEGER NOT NULL,
-    type TEXT,
+    type_id INTEGER,
     description TEXT,
     value TEXT,
     PRIMARY KEY (release_id, seq)
@@ -195,56 +229,6 @@ CREATE TABLE IF NOT EXISTS release_companies (
     seq INTEGER NOT NULL,
     company_id INTEGER,
     name TEXT,
-    entity_type TEXT,
-    entity_type_name TEXT,
+    entity_type INTEGER,
     PRIMARY KEY (release_id, seq)
 );
-
-CREATE INDEX IF NOT EXISTS idx_releases_master_id ON releases(master_id);
-CREATE INDEX IF NOT EXISTS idx_master_artists_artist_id ON master_artists(artist_id);
-CREATE INDEX IF NOT EXISTS idx_release_artists_artist_id ON release_artists(artist_id);
-CREATE INDEX IF NOT EXISTS idx_release_labels_label_id ON release_labels(label_id);
-
--- Name indexes, so lookups/searches by artist name (either the canonical
--- artists row or the as-credited name on a release/master) can use an
--- index instead of a full scan. LIKE 'prefix%' can use a NOCASE index;
--- a leading-wildcard search ('%name%') still can't.
-CREATE INDEX IF NOT EXISTS idx_artists_name ON artists(name COLLATE NOCASE);
-CREATE INDEX IF NOT EXISTS idx_release_artists_name ON release_artists(name COLLATE NOCASE);
-CREATE INDEX IF NOT EXISTS idx_master_artists_name ON master_artists(name COLLATE NOCASE);
-
--- release_search/master_search flatten the id-based artist credit tables
--- into one row per (release, credited artist) / (master, credited artist),
--- resolving artist_name to the canonical artists.name when the credit is
--- linked by id and falling back to the as-credited name otherwise. This is
--- the shape most "find X by artist name" queries want, e.g.:
---   SELECT DISTINCT release_id, release_title FROM release_search
---   WHERE artist_name LIKE 'Miles Davis%';
-CREATE VIEW IF NOT EXISTS release_search AS
-SELECT
-    r.id                      AS release_id,
-    r.title                   AS release_title,
-    r.released,
-    r.country,
-    r.data_quality,
-    ra.seq,
-    ra.artist_id,
-    coalesce(a.name, ra.name) AS artist_name,
-    ra.role
-FROM releases r
-JOIN release_artists ra ON ra.release_id = r.id
-LEFT JOIN artists a ON a.id = ra.artist_id;
-
-CREATE VIEW IF NOT EXISTS master_search AS
-SELECT
-    m.id                      AS master_id,
-    m.title                   AS master_title,
-    m.year,
-    m.data_quality,
-    ma.seq,
-    ma.artist_id,
-    coalesce(a.name, ma.name) AS artist_name,
-    ma.role
-FROM masters m
-JOIN master_artists ma ON ma.master_id = m.id
-LEFT JOIN artists a ON a.id = ma.artist_id;

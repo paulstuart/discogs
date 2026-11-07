@@ -25,6 +25,7 @@ type releaseStmts struct {
 	delIdentifiers, insIdentifier   *sql.Stmt
 	delVideos, insVideo             *sql.Stmt
 	delCompanies, insCompany        *sql.Stmt
+	insCompanyRole                  *sql.Stmt
 }
 
 func prepareReleaseStmts(ctx context.Context, tx *sql.Tx) (*releaseStmts, error) {
@@ -39,10 +40,10 @@ func prepareReleaseStmts(ctx context.Context, tx *sql.Tx) (*releaseStmts, error)
 	st := &releaseStmts{}
 	var err error
 	if st.upsert, err = prep(`
-		INSERT INTO releases (id, status, title, country, released, notes, master_id, is_main_release, data_quality)
+		INSERT INTO releases (id, status, title, country_id, released, notes, master_id, is_main_release, data_quality)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
-			status=excluded.status, title=excluded.title, country=excluded.country,
+			status=excluded.status, title=excluded.title, country_id=excluded.country_id,
 			released=excluded.released, notes=excluded.notes, master_id=excluded.master_id,
 			is_main_release=excluded.is_main_release, data_quality=excluded.data_quality`); err != nil {
 		return nil, err
@@ -80,13 +81,13 @@ func prepareReleaseStmts(ctx context.Context, tx *sql.Tx) (*releaseStmts, error)
 	if st.delGenres, err = prep("DELETE FROM release_genres WHERE release_id = ?"); err != nil {
 		return nil, err
 	}
-	if st.insGenre, err = prep("INSERT OR IGNORE INTO release_genres (release_id, genre) VALUES (?, ?)"); err != nil {
+	if st.insGenre, err = prep("INSERT OR IGNORE INTO release_genres (release_id, genre_id) VALUES (?, ?)"); err != nil {
 		return nil, err
 	}
 	if st.delStyles, err = prep("DELETE FROM release_styles WHERE release_id = ?"); err != nil {
 		return nil, err
 	}
-	if st.insStyle, err = prep("INSERT OR IGNORE INTO release_styles (release_id, style) VALUES (?, ?)"); err != nil {
+	if st.insStyle, err = prep("INSERT OR IGNORE INTO release_styles (release_id, style_id) VALUES (?, ?)"); err != nil {
 		return nil, err
 	}
 	if st.delTracks, err = prep("DELETE FROM release_tracks WHERE release_id = ?"); err != nil {
@@ -104,7 +105,7 @@ func prepareReleaseStmts(ctx context.Context, tx *sql.Tx) (*releaseStmts, error)
 	if st.delIdentifiers, err = prep("DELETE FROM release_identifiers WHERE release_id = ?"); err != nil {
 		return nil, err
 	}
-	if st.insIdentifier, err = prep("INSERT OR IGNORE INTO release_identifiers (release_id, seq, type, description, value) VALUES (?, ?, ?, ?, ?)"); err != nil {
+	if st.insIdentifier, err = prep("INSERT OR IGNORE INTO release_identifiers (release_id, seq, type_id, description, value) VALUES (?, ?, ?, ?, ?)"); err != nil {
 		return nil, err
 	}
 	if st.delVideos, err = prep("DELETE FROM release_videos WHERE release_id = ?"); err != nil {
@@ -116,7 +117,10 @@ func prepareReleaseStmts(ctx context.Context, tx *sql.Tx) (*releaseStmts, error)
 	if st.delCompanies, err = prep("DELETE FROM release_companies WHERE release_id = ?"); err != nil {
 		return nil, err
 	}
-	if st.insCompany, err = prep("INSERT OR IGNORE INTO release_companies (release_id, seq, company_id, name, entity_type, entity_type_name) VALUES (?, ?, ?, ?, ?, ?)"); err != nil {
+	if st.insCompany, err = prep("INSERT OR IGNORE INTO release_companies (release_id, seq, company_id, name, entity_type) VALUES (?, ?, ?, ?, ?)"); err != nil {
+		return nil, err
+	}
+	if st.insCompanyRole, err = prep("INSERT OR IGNORE INTO company_roles (id, name) VALUES (?, ?)"); err != nil {
 		return nil, err
 	}
 	return st, nil
@@ -134,7 +138,7 @@ func (st *releaseStmts) closeAll() {
 		st.delTracks, st.insTrack, st.delTrackArtists, st.insTrackArtist,
 		st.delIdentifiers, st.insIdentifier,
 		st.delVideos, st.insVideo,
-		st.delCompanies, st.insCompany,
+		st.delCompanies, st.insCompany, st.insCompanyRole,
 	} {
 		if s != nil {
 			s.Close()
@@ -164,7 +168,15 @@ func (s *SQLiteStore) PutReleases(ctx context.Context, batch []model.Release) er
 		if r.MasterID != nil {
 			masterID, isMainRelease = r.MasterID.ID, r.MasterID.IsMainRelease
 		}
-		if _, err := st.upsert.ExecContext(ctx, r.ID, nullIfEmpty(r.Status), r.Title, nullIfEmpty(r.Country), nullIfEmpty(r.Released), nullIfEmpty(r.Notes), masterID, isMainRelease, nullIfEmpty(r.DataQuality)); err != nil {
+		var countryID any
+		if r.Country != "" {
+			id, err := s.countries.id(ctx, tx, r.Country)
+			if err != nil {
+				return err
+			}
+			countryID = id
+		}
+		if _, err := st.upsert.ExecContext(ctx, r.ID, nullIfEmpty(r.Status), r.Title, countryID, nullIfEmpty(r.Released), nullIfEmpty(r.Notes), masterID, isMainRelease, nullIfEmpty(r.DataQuality)); err != nil {
 			return fmt.Errorf("sqlite: PutReleases upsert id=%d: %w", r.ID, err)
 		}
 
@@ -216,7 +228,11 @@ func (s *SQLiteStore) PutReleases(ctx context.Context, batch []model.Release) er
 			return fmt.Errorf("sqlite: PutReleases delete genres id=%d: %w", r.ID, err)
 		}
 		for _, g := range r.Genres {
-			if _, err := st.insGenre.ExecContext(ctx, r.ID, g); err != nil {
+			genreID, err := s.genres.id(ctx, tx, g)
+			if err != nil {
+				return err
+			}
+			if _, err := st.insGenre.ExecContext(ctx, r.ID, genreID); err != nil {
 				return fmt.Errorf("sqlite: PutReleases insert genre id=%d: %w", r.ID, err)
 			}
 		}
@@ -225,7 +241,11 @@ func (s *SQLiteStore) PutReleases(ctx context.Context, batch []model.Release) er
 			return fmt.Errorf("sqlite: PutReleases delete styles id=%d: %w", r.ID, err)
 		}
 		for _, sty := range r.Styles {
-			if _, err := st.insStyle.ExecContext(ctx, r.ID, sty); err != nil {
+			styleID, err := s.styles.id(ctx, tx, sty)
+			if err != nil {
+				return err
+			}
+			if _, err := st.insStyle.ExecContext(ctx, r.ID, styleID); err != nil {
 				return fmt.Errorf("sqlite: PutReleases insert style id=%d: %w", r.ID, err)
 			}
 		}
@@ -251,7 +271,15 @@ func (s *SQLiteStore) PutReleases(ctx context.Context, batch []model.Release) er
 			return fmt.Errorf("sqlite: PutReleases delete identifiers id=%d: %w", r.ID, err)
 		}
 		for i, id := range r.Identifiers {
-			if _, err := st.insIdentifier.ExecContext(ctx, r.ID, i, id.Type, nullIfEmpty(id.Description), id.Value); err != nil {
+			var typeID any
+			if id.Type != "" {
+				tid, err := s.identifierTypes.id(ctx, tx, id.Type)
+				if err != nil {
+					return err
+				}
+				typeID = tid
+			}
+			if _, err := st.insIdentifier.ExecContext(ctx, r.ID, i, typeID, nullIfEmpty(id.Description), id.Value); err != nil {
 				return fmt.Errorf("sqlite: PutReleases insert identifier id=%d: %w", r.ID, err)
 			}
 		}
@@ -269,7 +297,14 @@ func (s *SQLiteStore) PutReleases(ctx context.Context, batch []model.Release) er
 			return fmt.Errorf("sqlite: PutReleases delete companies id=%d: %w", r.ID, err)
 		}
 		for i, c := range r.Companies {
-			if _, err := st.insCompany.ExecContext(ctx, r.ID, i, c.ID, c.Name, nullIfEmpty(c.EntityType), nullIfEmpty(c.EntityTypeName)); err != nil {
+			var entityType any
+			if c.EntityType != 0 {
+				entityType = c.EntityType
+				if _, err := st.insCompanyRole.ExecContext(ctx, c.EntityType, c.EntityTypeName); err != nil {
+					return fmt.Errorf("sqlite: PutReleases insert company role id=%d: %w", r.ID, err)
+				}
+			}
+			if _, err := st.insCompany.ExecContext(ctx, r.ID, i, c.ID, c.Name, entityType); err != nil {
 				return fmt.Errorf("sqlite: PutReleases insert company id=%d: %w", r.ID, err)
 			}
 		}

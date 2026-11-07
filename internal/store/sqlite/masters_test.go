@@ -62,4 +62,20 @@ func TestPutMasters(t *testing.T) {
 	if artistID != 3225 {
 		t.Errorf("master 113 artist[0].id = %d, want 3225", artistID)
 	}
+
+	// Styles are normalized into a lookup table; master_styles_named
+	// resolves style_id back to the text.
+	hasTechno := scalar[int](t, s, `
+		SELECT count(*) FROM master_styles_named
+		WHERE master_id = 113 AND style = 'Techno'`)
+	if hasTechno != 1 {
+		t.Errorf("master 113 master_styles_named has %d 'Techno' rows, want 1", hasTechno)
+	}
+
+	// Master 114 in the fixture also has a "Techno" style; it should
+	// resolve to the same styles.id as master 113's, not a duplicate row.
+	styleRowCount := scalar[int](t, s, "SELECT count(*) FROM styles WHERE name = 'Techno'")
+	if styleRowCount != 1 {
+		t.Errorf("styles table has %d 'Techno' rows, want exactly 1 (shared lookup)", styleRowCount)
+	}
 }

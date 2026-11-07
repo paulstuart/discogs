@@ -9,13 +9,16 @@ changes — it captures decisions and real-data gotchas that aren't obvious from
 ```
 discogs fetch [--dir datadump] [--year YYYY] [--date YYYYMMDD]
 discogs load  [--dir datadump] --date YYYYMMDD [--db sqlite:discogs.db] [--kinds artists,labels,masters,releases]
+discogs index [--db sqlite:discogs.db]
 ```
 
-`fetch` and `load` are deliberately separate invocations. `fetch` downloads large files from
-`https://data.discogs.com/` into `<dir>/archive/<YYYY>/`; `load` streams an already-archived
-batch into a database. `load` never triggers a `fetch`, and `fetch` is never automatic —
-these files are large (releases.xml.gz alone is ~11GB compressed, ~100GB+ decompressed) and
-downloads should stay deliberate and infrequent.
+`fetch`, `load`, and `index` are deliberately separate invocations. `fetch` downloads large
+files from `https://data.discogs.com/` into `<dir>/archive/<YYYY>/`; `load` streams an
+already-archived batch into a database; `index` builds every index/view in one pass. None of
+these trigger each other automatically — these files are large (releases.xml.gz alone is
+~11GB compressed, ~100GB+ decompressed) and downloads should stay deliberate and infrequent,
+and index/view creation should happen exactly once, after all desired `load` calls are done
+(see the schema section below for why).
 
 ## Build / test
 
@@ -45,8 +48,9 @@ internal/fetch/          discovery (HTML scraping via golang.org/x/net/html) + c
                          verified download
 internal/load/           gzip -> xmlstream -> batch (2000 records) -> store.Put*
 internal/store/          Store interface + DSN dispatch (store.Open("sqlite:path.db"))
-internal/store/sqlite/   the only implementation today; schema.sql (go:embed'd), one file
-                         per entity (artists.go, labels.go, masters.go, releases.go)
+internal/store/sqlite/   the only implementation today; schema.sql + indexes.sql (both
+                         go:embed'd, see below), one file per entity (artists.go, labels.go,
+                         masters.go, releases.go), lookup.go (vocabulary-to-id cache)
 ```
 
 `internal/model` is the single struct set for all four entities — don't create parallel
@@ -85,9 +89,37 @@ add it as a serialization of these structs, not a new model package.
   balances transaction overhead against memory; re-tune only with a measured reason.
 - **SQLite tuning**: WAL journal mode, `synchronous=NORMAL`, `SetMaxOpenConns(1)` (SQLite is
   single-writer; serializing avoids fighting `SQLITE_BUSY` entirely rather than retrying).
-  `release_search` / `master_search` views and name indexes (`idx_*_name ... COLLATE NOCASE`)
-  exist in `schema.sql` for "find records by artist name" queries without needing to join
-  through `release_artists`/`master_artists` by hand.
+- **`schema.sql` is tables only; `indexes.sql` is indexes + views, applied separately.**
+  `sqlite.Open()` applies only `schema.sql`. `SQLiteStore.BuildIndexes` (the `discogs index`
+  subcommand) applies `indexes.sql`. This split exists so bulk inserts during `load` never pay
+  index-maintenance cost — run `index` once, explicitly, after all desired `--kinds` loads
+  across however many invocations are done. Don't make `load` call `BuildIndexes`
+  automatically: if loads happen in separate invocations (as they did here — labels+artists,
+  then masters, then releases, as three separate commands), auto-building indexes after the
+  first one would reintroduce incremental index-maintenance cost on every load after that.
+- **Free-text vocabulary is normalized, not repeated.** `genre`, `style`, `country`, and
+  identifier `type` used to be stored as raw text in every row that referenced them (tens of
+  millions of rows for the big ones). They're now lookup tables (`genres`, `styles`,
+  `countries`, `identifier_types`: `(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE)`),
+  resolved to a surrogate id via `lookup.go`'s `lookupCache` — an in-process
+  `map[string]int64` cache backed by `INSERT ... ON CONFLICT(name) DO UPDATE ... RETURNING
+  id` (works because the vendored SQLite is 3.54.1, which supports `RETURNING`). The cache
+  lives on `SQLiteStore` and persists across every `PutMasters`/`PutReleases` call for the
+  whole process, since the vocabulary is tiny (dozens to a few hundred distinct values) — after
+  warmup it's a pure in-memory hit, not a DB round trip per row. `company_roles` is the one
+  exception: Discogs' own `<entity_type>` numeric code (e.g. `23` → "Recorded At") is already a
+  stable key, so `company_roles.id` is that code directly, not a synthesized surrogate — no
+  cache needed there, just `INSERT OR IGNORE INTO company_roles (id, name) VALUES (?, ?)`.
+  If you normalize another free-text column, check whether the source XML already carries a
+  natural numeric id (use the `company_roles` pattern) before reaching for `lookupCache` (the
+  `genres`/`styles`/`countries`/`identifier_types` pattern).
+- **`..._named` views resolve ids back to text for querying.** `release_genres_named`,
+  `release_styles_named`, `master_genres_named`, `master_styles_named`,
+  `release_identifiers_named`, `release_companies_named` all live in `indexes.sql` and give
+  back the same shape the old denormalized tables had. `release_search` (added by a concurrent
+  session, see below) is updated to join `countries` so it still exposes a plain `country` text
+  column despite `releases` storing `country_id` underneath — if you touch `releases.country_id`
+  again, check `release_search` doesn't need a matching update.
 
 ## Known real-data field shapes (confirmed against live dumps, not assumed)
 
@@ -110,10 +142,10 @@ add it as a serialization of these structs, not a new model package.
 ## Scale, for context when changing the hot path
 
 Loading the 2026-11-01 batch produced: 10.3M artists, 2.4M labels, 2.6M masters, 19.6M
-releases, and roughly 470M total child rows (tracklists, credits, identifiers, etc.) in a
-~40GB SQLite file. `internal/load`/`internal/store` sit on the hot path for all of that —
-profile before "optimizing," and re-run a real `fetch`+`load` (not just `go test`) to validate
-any performance change, since the fixture tests are deliberately tiny.
+releases, and roughly 470M total child rows (tracklists, credits, identifiers, etc.).
+`internal/load`/`internal/store` sit on the hot path for all of that — profile before
+"optimizing," and re-run a real `fetch`+`load`+`index` (not just `go test`) to validate any
+performance change, since the fixture tests are deliberately tiny.
 
 ## Working conventions observed in this repo
 
@@ -132,8 +164,8 @@ any performance change, since the fixture tests are deliberately tiny.
   made by presenting one clearly-recommended option plus an alternative, not a blank "what do
   you want" question.
 - **`datadump/` and `*.db*` are gitignored.** Never try to commit downloaded dumps or the
-  loaded database. Don't assume disk usage is free either — a full load is currently ~40GB+
-  the ~12GB of archived `.xml.gz` source files.
+  loaded database. Don't assume disk usage is free either — a full load is tens of GB on top
+  of the ~12GB of archived `.xml.gz` source files.
 - **Multiple sessions may be working on this repo concurrently.** `cmd/xmlschema`, the
   `release_search`/`master_search` views, and some of the name indexes in `schema.sql` were
   added by a parallel session during this project's initial build, not sequentially. If you

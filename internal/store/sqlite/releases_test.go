@@ -77,6 +77,37 @@ func TestPutReleases(t *testing.T) {
 		}
 	}
 
+	// Normalized vocabulary (genre/style/country/identifier type/company
+	// role) resolves back to its text via the *_named views / joins.
+	genre := scalar[string](t, s, "SELECT genre FROM release_genres_named WHERE release_id = 1")
+	if genre != "Electronic" {
+		t.Errorf("release 1 genre = %q, want Electronic", genre)
+	}
+	style := scalar[string](t, s, "SELECT style FROM release_styles_named WHERE release_id = 1")
+	if style != "Deep House" {
+		t.Errorf("release 1 style = %q, want Deep House", style)
+	}
+	country := scalar[string](t, s, `
+		SELECT co.name FROM releases r JOIN countries co ON co.id = r.country_id
+		WHERE r.id = 1`)
+	if country != "Sweden" {
+		t.Errorf("release 1 country = %q, want Sweden", country)
+	}
+	idType := scalar[string](t, s, "SELECT type FROM release_identifiers_named WHERE release_id = 1 AND seq = 0")
+	if idType != "Matrix / Runout" {
+		t.Errorf("release 1 identifier[0] type = %q, want 'Matrix / Runout'", idType)
+	}
+	// All 4 identifiers share the same type text; confirm that resolved
+	// to one shared identifier_types row, not four.
+	idTypeRows := scalar[int](t, s, "SELECT count(*) FROM identifier_types WHERE name = 'Matrix / Runout'")
+	if idTypeRows != 1 {
+		t.Errorf("identifier_types has %d 'Matrix / Runout' rows, want exactly 1 (shared lookup)", idTypeRows)
+	}
+	companyRole := scalar[string](t, s, "SELECT role FROM release_companies_named WHERE release_id = 1 AND company_id = 56025")
+	if companyRole != "Pressed By" {
+		t.Errorf("release 1 company 56025 role = %q, want 'Pressed By'", companyRole)
+	}
+
 	// Re-run idempotency: PutReleases twice should not duplicate child rows.
 	if err := s.PutReleases(ctx, releases); err != nil {
 		t.Fatalf("PutReleases (rerun): %v", err)

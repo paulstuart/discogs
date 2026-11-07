@@ -18,6 +18,8 @@ func main() {
 		err = runFetch(os.Args[2:])
 	case "load":
 		err = runLoad(os.Args[2:])
+	case "index":
+		err = runIndex(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -37,6 +39,11 @@ func usage() {
 Usage:
   discogs fetch [--dir datadump] [--year YYYY] [--date YYYYMMDD]
   discogs load  [--dir datadump] --date YYYYMMDD [--db sqlite:discogs.db] [--kinds artists,labels,masters,releases]
+  discogs index [--db sqlite:discogs.db]
 
-Run "discogs fetch -h" or "discogs load -h" for flag details.`)
+Run "discogs index" once after all desired "load" invocations are done --
+it builds every index/view in a single pass, rather than maintaining them
+incrementally during each load.
+
+Run "discogs fetch -h", "discogs load -h", or "discogs index -h" for flag details.`)
 }

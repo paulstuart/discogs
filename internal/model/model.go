@@ -127,7 +127,7 @@ type Identifier struct {
 type Company struct {
 	ID             int64  `xml:"id" json:"id"`
 	Name           string `xml:"name" json:"name"`
-	EntityType     string `xml:"entity_type" json:"entity_type,omitempty"`
+	EntityType     int64  `xml:"entity_type" json:"entity_type,omitempty"`
 	EntityTypeName string `xml:"entity_type_name" json:"entity_type_name,omitempty"`
 }
 
