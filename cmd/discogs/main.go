@@ -1,0 +1,42 @@
+// Command discogs downloads and loads Discogs' monthly XML data dumps.
+package main
+
+import (
+	"fmt"
+	"os"
+)
+
+func main() {
+	if len(os.Args) < 2 {
+		usage()
+		os.Exit(2)
+	}
+
+	var err error
+	switch os.Args[1] {
+	case "fetch":
+		err = runFetch(os.Args[2:])
+	case "load":
+		err = runLoad(os.Args[2:])
+	case "-h", "--help", "help":
+		usage()
+		return
+	default:
+		usage()
+		os.Exit(2)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "discogs:", err)
+		os.Exit(1)
+	}
+}
+
+func usage() {
+	fmt.Fprintln(os.Stderr, `discogs downloads and loads Discogs' monthly XML data dumps.
+
+Usage:
+  discogs fetch [--dir datadump] [--year YYYY] [--date YYYYMMDD]
+  discogs load  [--dir datadump] --date YYYYMMDD [--db sqlite:discogs.db] [--kinds artists,labels,masters,releases]
+
+Run "discogs fetch -h" or "discogs load -h" for flag details.`)
+}

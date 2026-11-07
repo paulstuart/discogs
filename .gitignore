@@ -28,6 +28,13 @@ go.work.sum
 # env file
 .env
 
+# Downloaded Discogs data dumps and loaded databases
+/datadump/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
 # Editor/IDE
 # .idea/
 # .vscode/
