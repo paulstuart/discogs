@@ -20,11 +20,6 @@ var indexesSQL string
 // SQLiteStore implements store.Store.
 type SQLiteStore struct {
 	db *sql.DB
-
-	genres          *lookupCache
-	styles          *lookupCache
-	countries       *lookupCache
-	identifierTypes *lookupCache
 }
 
 // Open opens (creating if necessary) a SQLite database at path, applies
@@ -56,13 +51,7 @@ func Open(path string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("sqlite: apply schema: %w", err)
 	}
 
-	return &SQLiteStore{
-		db:              db,
-		genres:          newLookupCache("genres"),
-		styles:          newLookupCache("styles"),
-		countries:       newLookupCache("countries"),
-		identifierTypes: newLookupCache("identifier_types"),
-	}, nil
+	return &SQLiteStore{db: db}, nil
 }
 
 // BuildIndexes creates every index and view defined in indexes.sql. Run

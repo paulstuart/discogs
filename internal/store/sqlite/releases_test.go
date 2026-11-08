@@ -1,7 +1,6 @@
 package sqlite
 
 import (
-	"context"
 	"os"
 	"testing"
 
@@ -37,10 +36,7 @@ func TestPutReleases(t *testing.T) {
 	}
 
 	s := openTestStore(t)
-	ctx := context.Background()
-	if err := s.PutReleases(ctx, releases); err != nil {
-		t.Fatalf("PutReleases: %v", err)
-	}
+	putReleasesFull(t, s, releases)
 
 	count := scalar[int](t, s, "SELECT count(*) FROM releases")
 	if count != 1 {
@@ -108,10 +104,9 @@ func TestPutReleases(t *testing.T) {
 		t.Errorf("release 1 company 56025 role = %q, want 'Pressed By'", companyRole)
 	}
 
-	// Re-run idempotency: PutReleases twice should not duplicate child rows.
-	if err := s.PutReleases(ctx, releases); err != nil {
-		t.Fatalf("PutReleases (rerun): %v", err)
-	}
+	// A second load (Prepare wipes, then reload) should fully replace,
+	// not duplicate, the data.
+	putReleasesFull(t, s, releases)
 	got := scalar[int](t, s, "SELECT count(*) FROM release_tracks WHERE release_id = 1")
 	if got != 6 {
 		t.Errorf("release_tracks row count after rerun = %d, want 6 (no duplicates)", got)

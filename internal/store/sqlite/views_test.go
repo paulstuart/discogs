@@ -1,7 +1,6 @@
 package sqlite
 
 import (
-	"context"
 	"testing"
 )
 
@@ -11,10 +10,7 @@ import (
 func TestReleaseSearchView(t *testing.T) {
 	releases := loadReleasesFixture(t)
 	s := openTestStore(t)
-	ctx := context.Background()
-	if err := s.PutReleases(ctx, releases); err != nil {
-		t.Fatalf("PutReleases: %v", err)
-	}
+	putReleasesFull(t, s, releases)
 
 	title := scalar[string](t, s, `
 		SELECT release_title FROM release_search
@@ -29,10 +25,7 @@ func TestReleaseSearchView(t *testing.T) {
 func TestMasterSearchView(t *testing.T) {
 	masters := loadMastersFixture(t)
 	s := openTestStore(t)
-	ctx := context.Background()
-	if err := s.PutMasters(ctx, masters); err != nil {
-		t.Fatalf("PutMasters: %v", err)
-	}
+	putMastersFull(t, s, masters)
 
 	title := scalar[string](t, s, `
 		SELECT master_title FROM master_search

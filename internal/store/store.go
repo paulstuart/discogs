@@ -11,16 +11,32 @@ import (
 	"github.com/paulstuart/discogs/internal/store/sqlite"
 )
 
-// Store is implemented by every supported database backend. Each PutX
-// method upserts a batch of records: existing rows (matched by the
-// Discogs numeric id) are updated in place, new rows are inserted, and
-// child/nested data (urls, aliases, tracklist, etc.) is fully replaced
-// per record so that a shrunk list is reflected correctly on reload.
+// Store is implemented by every supported database backend. Loading one
+// kind is a three-phase sequence: PrepareX (wipe that kind's tables, so
+// the load is a full replace rather than a merge -- Discogs dumps are
+// complete monthly snapshots, not deltas, so there's no case where two
+// different dumps for the same kind should be merged), then PutX called
+// once per decoded batch with plain inserts, then FinishX (masters/
+// releases only) to bulk-resolve free-text vocabulary into its lookup
+// tables via SQL and drop the intermediate raw tables. Replacing the
+// whole kind's data on every load also means a shrunk child list (fewer
+// tracks, fewer urls) is reflected for free -- the old table is gone,
+// not merged into.
 type Store interface {
+	PrepareArtists(ctx context.Context) error
 	PutArtists(ctx context.Context, batch []model.Artist) error
+
+	PrepareLabels(ctx context.Context) error
 	PutLabels(ctx context.Context, batch []model.Label) error
+
+	PrepareMasters(ctx context.Context) error
 	PutMasters(ctx context.Context, batch []model.Master) error
+	FinishMasters(ctx context.Context) error
+
+	PrepareReleases(ctx context.Context) error
 	PutReleases(ctx context.Context, batch []model.Release) error
+	FinishReleases(ctx context.Context) error
+
 	// BuildIndexes creates every index/view used for querying. Call this
 	// once, explicitly, after all desired loads are done -- not
 	// automatically after every load -- so bulk inserts never pay

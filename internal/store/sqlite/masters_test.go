@@ -1,7 +1,6 @@
 package sqlite
 
 import (
-	"context"
 	"os"
 	"testing"
 
@@ -33,10 +32,7 @@ func TestPutMasters(t *testing.T) {
 	}
 
 	s := openTestStore(t)
-	ctx := context.Background()
-	if err := s.PutMasters(ctx, masters); err != nil {
-		t.Fatalf("PutMasters: %v", err)
-	}
+	putMastersFull(t, s, masters)
 
 	count := scalar[int](t, s, "SELECT count(*) FROM masters")
 	if count != 2 {

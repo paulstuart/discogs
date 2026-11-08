@@ -4,6 +4,8 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+
+	"github.com/paulstuart/discogs/internal/model"
 )
 
 // openTestStore opens a fresh SQLite store backed by a temp file (not
@@ -23,6 +25,59 @@ func openTestStore(t *testing.T) *SQLiteStore {
 		t.Fatalf("BuildIndexes: %v", err)
 	}
 	return s
+}
+
+// putArtistsFull drives the same Prepare+Put sequence a real `load`
+// invocation does, so tests exercise the full-replace wipe rather than
+// calling PutArtists against whatever tables already happened to hold.
+func putArtistsFull(t *testing.T, s *SQLiteStore, batch []model.Artist) {
+	t.Helper()
+	ctx := context.Background()
+	if err := s.PrepareArtists(ctx); err != nil {
+		t.Fatalf("PrepareArtists: %v", err)
+	}
+	if err := s.PutArtists(ctx, batch); err != nil {
+		t.Fatalf("PutArtists: %v", err)
+	}
+}
+
+func putLabelsFull(t *testing.T, s *SQLiteStore, batch []model.Label) {
+	t.Helper()
+	ctx := context.Background()
+	if err := s.PrepareLabels(ctx); err != nil {
+		t.Fatalf("PrepareLabels: %v", err)
+	}
+	if err := s.PutLabels(ctx, batch); err != nil {
+		t.Fatalf("PutLabels: %v", err)
+	}
+}
+
+func putMastersFull(t *testing.T, s *SQLiteStore, batch []model.Master) {
+	t.Helper()
+	ctx := context.Background()
+	if err := s.PrepareMasters(ctx); err != nil {
+		t.Fatalf("PrepareMasters: %v", err)
+	}
+	if err := s.PutMasters(ctx, batch); err != nil {
+		t.Fatalf("PutMasters: %v", err)
+	}
+	if err := s.FinishMasters(ctx); err != nil {
+		t.Fatalf("FinishMasters: %v", err)
+	}
+}
+
+func putReleasesFull(t *testing.T, s *SQLiteStore, batch []model.Release) {
+	t.Helper()
+	ctx := context.Background()
+	if err := s.PrepareReleases(ctx); err != nil {
+		t.Fatalf("PrepareReleases: %v", err)
+	}
+	if err := s.PutReleases(ctx, batch); err != nil {
+		t.Fatalf("PutReleases: %v", err)
+	}
+	if err := s.FinishReleases(ctx); err != nil {
+		t.Fatalf("FinishReleases: %v", err)
+	}
 }
 
 func scalar[T any](t *testing.T, s *SQLiteStore, query string, args ...any) T {

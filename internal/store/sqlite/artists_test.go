@@ -1,7 +1,6 @@
 package sqlite
 
 import (
-	"context"
 	"os"
 	"testing"
 
@@ -33,10 +32,7 @@ func TestPutArtists(t *testing.T) {
 	}
 
 	s := openTestStore(t)
-	ctx := context.Background()
-	if err := s.PutArtists(ctx, artists); err != nil {
-		t.Fatalf("PutArtists: %v", err)
-	}
+	putArtistsFull(t, s, artists)
 
 	count := scalar[int](t, s, "SELECT count(*) FROM artists")
 	if count != 3 {
@@ -58,10 +54,9 @@ func TestPutArtists(t *testing.T) {
 		t.Errorf("artist 2 member count = %d, want 2 (it's a group)", memberCount)
 	}
 
-	// Re-run idempotency: same batch twice should not duplicate rows.
-	if err := s.PutArtists(ctx, artists); err != nil {
-		t.Fatalf("PutArtists (rerun): %v", err)
-	}
+	// A second load (Prepare wipes, then reload) should fully replace,
+	// not duplicate, the data.
+	putArtistsFull(t, s, artists)
 	count = scalar[int](t, s, "SELECT count(*) FROM artists")
 	if count != 3 {
 		t.Errorf("artists row count after rerun = %d, want 3", count)

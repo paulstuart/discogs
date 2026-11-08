@@ -9,7 +9,13 @@ import (
 )
 
 func loadReleases(ctx context.Context, st store.Store, r io.Reader) error {
-	return batchDecode(r, "release", func(batch []model.Release) error {
+	if err := st.PrepareReleases(ctx); err != nil {
+		return err
+	}
+	if err := batchDecode(r, "release", func(batch []model.Release) error {
 		return st.PutReleases(ctx, batch)
-	})
+	}); err != nil {
+		return err
+	}
+	return st.FinishReleases(ctx)
 }

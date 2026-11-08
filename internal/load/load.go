@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 
 	"github.com/paulstuart/discogs/internal/config"
 	"github.com/paulstuart/discogs/internal/store"
@@ -32,7 +31,7 @@ type Options struct {
 // Run opens the store named by opts.DB and loads each requested kind from
 // the archived file for opts.Date.
 func Run(ctx context.Context, opts Options) error {
-	year, err := yearFromDate(opts.Date)
+	year, err := config.Year(opts.Date)
 	if err != nil {
 		return err
 	}
@@ -50,17 +49,6 @@ func Run(ctx context.Context, opts Options) error {
 		}
 	}
 	return nil
-}
-
-func yearFromDate(date string) (int, error) {
-	if len(date) != 8 {
-		return 0, fmt.Errorf("load: invalid --date %q, want YYYYMMDD", date)
-	}
-	year, err := strconv.Atoi(date[:4])
-	if err != nil {
-		return 0, fmt.Errorf("load: invalid --date %q, want YYYYMMDD", date)
-	}
-	return year, nil
 }
 
 func loadFile(ctx context.Context, st store.Store, path string, kind config.Kind) error {

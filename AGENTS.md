@@ -10,6 +10,7 @@ changes — it captures decisions and real-data gotchas that aren't obvious from
 discogs fetch [--dir datadump] [--year YYYY] [--date YYYYMMDD]
 discogs load  [--dir datadump] --date YYYYMMDD [--db sqlite:discogs.db] [--kinds artists,labels,masters,releases]
 discogs index [--db sqlite:discogs.db]
+discogs dump  [--dir datadump] --date YYYYMMDD --kind artists|labels|masters|releases [--out file.jsonl]
 ```
 
 `fetch`, `load`, and `index` are deliberately separate invocations. `fetch` downloads large
@@ -19,6 +20,15 @@ these trigger each other automatically — these files are large (releases.xml.g
 ~11GB compressed, ~100GB+ decompressed) and downloads should stay deliberate and infrequent,
 and index/view creation should happen exactly once, after all desired `load` calls are done
 (see the schema section below for why).
+
+`dump` is a fourth, independent path: it streams one kind's archived XML straight to
+newline-delimited JSON (one `model.<Kind>` record per line), bypassing `store.Store` entirely.
+It exists for ad hoc exploration (`discogs dump --date ... --kind releases | jq ...`, or
+loading the JSONL into duckdb/sqlite3 directly) without committing to a full `load`. It's
+JSON-only, not TSV/CSV — `Master`/`Release` have deeply nested repeating fields (tracklist
+with per-track artist credits, identifiers, companies, formats...), so a flat TSV would mean
+splitting into many child files per kind, basically re-deriving the SQL schema as flat files.
+JSON needs no flattening since the structs already carry `json` tags for exactly this.
 
 ## Build / test
 
@@ -47,10 +57,12 @@ internal/xmlstream/      generic StreamDecode[T](r, elem, fn) — one streaming 
 internal/fetch/          discovery (HTML scraping via golang.org/x/net/html) + checksum-
                          verified download
 internal/load/           gzip -> xmlstream -> batch (2000 records) -> store.Put*
+internal/dump/           gzip -> xmlstream -> json.Encoder, straight to stdout/file -- no
+                         store.Store involved, used by the `discogs dump` subcommand
 internal/store/          Store interface + DSN dispatch (store.Open("sqlite:path.db"))
 internal/store/sqlite/   the only implementation today; schema.sql + indexes.sql (both
                          go:embed'd, see below), one file per entity (artists.go, labels.go,
-                         masters.go, releases.go), lookup.go (vocabulary-to-id cache)
+                         masters.go, releases.go), each exposing PrepareX/PutX(/FinishX)
 ```
 
 `internal/model` is the single struct set for all four entities — don't create parallel
@@ -58,8 +70,9 @@ internal/store/sqlite/   the only implementation today; schema.sql + indexes.sql
 add it as a serialization of these structs, not a new model package.
 
 `store.Store` is the extensibility seam for other databases. Adding a backend means a new
-`internal/store/<name>` package implementing the five-method interface, plus one `case` in
-`store.Open`'s DSN dispatch — no changes to `internal/load`.
+`internal/store/<name>` package implementing the interface (a `Prepare`/`Put`/(`Finish`) triplet
+per entity, plus `BuildIndexes`/`Close`), plus one `case` in `store.Open`'s DSN dispatch — no
+changes to `internal/load`.
 
 ## Schema design (why it looks the way it does)
 
@@ -67,12 +80,19 @@ add it as a serialization of these structs, not a new model package.
   forward references (e.g. a label's sublabel ID that hasn't been loaded yet, or a release's
   `master_id` pointing at a master you may never load). FK-shaped columns exist for joins and
   are indexed, just not enforced.
-- **Upsert, not insert.** Parent tables (`artists`, `labels`, `masters`, `releases`) use
-  `INSERT ... ON CONFLICT(id) DO UPDATE`. Every child/join table uses `DELETE FROM child WHERE
-  parent_id = ?` immediately followed by fresh inserts, all in the same transaction as the
-  parent upsert. This is required, not just tidy: a re-loaded record's child list can *shrink*
-  (fewer URLs, fewer tracks), which `ON CONFLICT DO UPDATE` can't express for a list but
-  delete-then-reinsert handles naturally.
+- **Full replace, not merge.** Loading a kind is `PrepareX` (wipe every table for that kind),
+  then `PutX` once per decoded batch doing plain inserts, then `FinishX` (masters/releases
+  only -- see the vocabulary bullet below). `internal/load`'s `loadArtists`/`loadLabels`/
+  `loadMasters`/`loadReleases` call these in sequence; `store.Store` callers shouldn't call
+  `PutX` without a preceding `PrepareX` in the same load. This is deliberate, not an
+  oversight: Discogs dumps are complete monthly snapshots, not deltas, so there's never a case
+  where you want to merge two different dumps' data for the same kind into one DB -- you just
+  want the latest one. Replacing the whole kind's tables on every load also means a shrunk
+  child list (fewer URLs, fewer tracks) is reflected for free, since the old rows are gone
+  rather than merged into -- no per-record `DELETE` needed. (An earlier version of this schema
+  used `INSERT ... ON CONFLICT(id) DO UPDATE` on parent tables plus a per-record `DELETE FROM
+  child WHERE parent_id = ?` before every child insert, to handle exactly this shrinking-list
+  case under a merge model. That's gone now that loads fully replace instead of merging.)
 - **Child-table inserts are `INSERT OR IGNORE`, not `INSERT`.** Real Discogs data is not fully
   deduplicated — e.g. a label's `<urls>` list can contain the same URL twice. This was caught
   live (not by the fixture tests) during the first real load: label id 14 had a duplicate URL
@@ -97,22 +117,28 @@ add it as a serialization of these structs, not a new model package.
   automatically: if loads happen in separate invocations (as they did here — labels+artists,
   then masters, then releases, as three separate commands), auto-building indexes after the
   first one would reintroduce incremental index-maintenance cost on every load after that.
-- **Free-text vocabulary is normalized, not repeated.** `genre`, `style`, `country`, and
-  identifier `type` used to be stored as raw text in every row that referenced them (tens of
-  millions of rows for the big ones). They're now lookup tables (`genres`, `styles`,
-  `countries`, `identifier_types`: `(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE)`),
-  resolved to a surrogate id via `lookup.go`'s `lookupCache` — an in-process
-  `map[string]int64` cache backed by `INSERT ... ON CONFLICT(name) DO UPDATE ... RETURNING
-  id` (works because the vendored SQLite is 3.54.1, which supports `RETURNING`). The cache
-  lives on `SQLiteStore` and persists across every `PutMasters`/`PutReleases` call for the
-  whole process, since the vocabulary is tiny (dozens to a few hundred distinct values) — after
-  warmup it's a pure in-memory hit, not a DB round trip per row. `company_roles` is the one
-  exception: Discogs' own `<entity_type>` numeric code (e.g. `23` → "Recorded At") is already a
-  stable key, so `company_roles.id` is that code directly, not a synthesized surrogate — no
-  cache needed there, just `INSERT OR IGNORE INTO company_roles (id, name) VALUES (?, ?)`.
-  If you normalize another free-text column, check whether the source XML already carries a
-  natural numeric id (use the `company_roles` pattern) before reaching for `lookupCache` (the
-  `genres`/`styles`/`countries`/`identifier_types` pattern).
+- **Free-text vocabulary is normalized, not repeated, via a raw-table + bulk-SQL pass, not a
+  per-row Go lookup.** `genre`, `style`, `country`, and identifier `type` used to be stored as
+  raw text in every row that referenced them (tens of millions of rows for the big ones).
+  They're now lookup tables (`genres`, `styles`, `countries`, `identifier_types`: `(id INTEGER
+  PRIMARY KEY, name TEXT NOT NULL UNIQUE)`). `PutMasters`/`PutReleases` write the raw text
+  into staging tables (`master_genres_raw`, `release_genres_raw`, `releases_raw.country`,
+  `release_identifiers_raw.type`, etc. — created by `PrepareMasters`/`PrepareReleases`,
+  dropped by `FinishMasters`/`FinishReleases`) instead of resolving an id per row during the
+  hot insert path. `FinishMasters`/`FinishReleases` then do the resolution once, in bulk, with
+  plain SQL: `INSERT INTO genres (name) SELECT DISTINCT genre FROM ... ON CONFLICT(name) DO
+  NOTHING`, then `INSERT ... SELECT ... JOIN` to populate the final join table from the
+  staging table. Note the `WHERE` clause on those `SELECT DISTINCT` statements isn't optional
+  filtering — SQLite's parser treats a bare `SELECT ... FROM table ON CONFLICT ...` as
+  ambiguous with join syntax and rejects it; a `WHERE` clause (even a no-op `col IS NOT NULL`
+  on a `NOT NULL` column) disambiguates it. Confirmed by hitting this live against SQLite
+  3.54.1, not assumed from docs. `company_roles` is the one exception: Discogs' own
+  `<entity_type>` numeric code (e.g. `23` → "Recorded At") is already a stable key, so
+  `company_roles.id` is that code directly, not a synthesized surrogate — no staging table
+  needed there, just `INSERT OR IGNORE INTO company_roles (id, name) VALUES (?, ?)` straight
+  from `PutReleases`. If you normalize another free-text column, check whether the source XML
+  already carries a natural numeric id (use the `company_roles` pattern) before reaching for
+  the raw-table-plus-bulk-SQL pattern.
 - **`..._named` views resolve ids back to text for querying.** `release_genres_named`,
   `release_styles_named`, `master_genres_named`, `master_styles_named`,
   `release_identifiers_named`, `release_companies_named` all live in `indexes.sql` and give

@@ -1,7 +1,6 @@
 package sqlite
 
 import (
-	"context"
 	"os"
 	"testing"
 
@@ -33,10 +32,7 @@ func TestPutLabels(t *testing.T) {
 	}
 
 	s := openTestStore(t)
-	ctx := context.Background()
-	if err := s.PutLabels(ctx, labels); err != nil {
-		t.Fatalf("PutLabels: %v", err)
-	}
+	putLabelsFull(t, s, labels)
 
 	count := scalar[int](t, s, "SELECT count(*) FROM labels")
 	if count != 3 {
@@ -53,14 +49,11 @@ func TestPutLabels(t *testing.T) {
 		t.Errorf("label 1 sublabel count = %d, want 8", subCount)
 	}
 
-	// Re-run with a shrunk sublabel list and confirm the child table
-	// reflects the shrink (DELETE+INSERT semantics), and the parent
-	// row count is unchanged (upsert, not duplicate insert).
-	shrunk := labels[0]
-	shrunk.SubLabels = shrunk.SubLabels[:2]
-	if err := s.PutLabels(ctx, []model.Label{shrunk}); err != nil {
-		t.Fatalf("PutLabels (rerun): %v", err)
-	}
+	// A second load (e.g. next month's dump) with a shrunk sublabel list
+	// should reflect the shrink: PrepareLabels wipes the tables, so the
+	// reload is a full replace rather than a merge with the stale rows.
+	labels[0].SubLabels = labels[0].SubLabels[:2]
+	putLabelsFull(t, s, labels)
 	count = scalar[int](t, s, "SELECT count(*) FROM labels")
 	if count != 3 {
 		t.Errorf("labels row count after rerun = %d, want 3 (upsert, not duplicate)", count)

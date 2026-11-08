@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 )
 
 // DefaultDataDir is used when the --dir flag is not given.
@@ -48,6 +49,19 @@ func ArchivePath(dataDir string, year int, date string, kind Kind) string {
 // ChecksumPath joins ArchiveDir and ChecksumFileName for a given year/date.
 func ChecksumPath(dataDir string, year int, date string) string {
 	return filepath.Join(ArchiveDir(dataDir, year), ChecksumFileName(date))
+}
+
+// Year extracts the year from a YYYYMMDD date string, as needed to build an
+// ArchivePath.
+func Year(date string) (int, error) {
+	if len(date) != 8 {
+		return 0, fmt.Errorf("config: invalid date %q, want YYYYMMDD", date)
+	}
+	year, err := strconv.Atoi(date[:4])
+	if err != nil {
+		return 0, fmt.Errorf("config: invalid date %q, want YYYYMMDD", date)
+	}
+	return year, nil
 }
 
 var checksumNameRE = regexp.MustCompile(`^discogs_(\d{8})_CHECKSUM\.txt$`)
